@@ -947,7 +947,7 @@ def main():
             sys.exit(0)
         else:
             logging.info("Found " + str(len(matching_backup_tables)) +
-                         " table(s) in DynamoDB host to backup: " +
+                         " table(s) in DynamoDB in " + args.region + " to backup: " +
                          ", ".join(matching_backup_tables))
 
         try:
