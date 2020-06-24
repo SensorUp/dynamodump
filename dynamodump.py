@@ -75,12 +75,12 @@ def _get_aws_client(profile, region, service):
             azone = urlopen(METADATA_URL + "placement/availability-zone",
                             data=None, timeout=5).read().decode()
             aws_region = azone[:-1]
-        except URLError:
-            logging.exception("Timed out connecting to metadata service.\n\n")
-            sys.exit(1)
         except HTTPError as e:
             logging.exception("Error determining region used for AWS client.  Typo in code?\n\n" +
                               str(e))
+            sys.exit(1)
+        except URLError:
+            logging.exception("Timed out connecting to metadata service.\n\n")
             sys.exit(1)
 
     if profile:
