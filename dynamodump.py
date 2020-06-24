@@ -828,12 +828,14 @@ def main():
 
     # parse args
     parser = argparse.ArgumentParser(description="Simple DynamoDB backup/restore/empty.")
+    tablegroup = parser.add_mutually_exclusive_group()
+    schemagroup = parser.add_mutually_exclusive_group()
     parser.add_argument("-a", "--archive", help="Type of compressed archive to create."
-                        "If unset, don't create archive", choices=["zip", "tar"])
+                        "If unset, don't create archive. Required for --bucket.", choices=["zip", "tar"])
     parser.add_argument("-b", "--bucket", help="S3 bucket in which to store or retrieve backups."
-                        "[must already exist]")
+                        "[must already exist and --archive must be specified]")
     parser.add_argument("-m", "--mode", help="Operation to perform",
-                        choices=["backup", "restore", "empty"])
+                        choices=["backup", "restore", "empty"], required=True)
     parser.add_argument("-r", "--region", help="AWS region to use, e.g. 'us-west-1'. "
                         "Can use AWS_DEFAULT_REGION for local testing.  Use '" +
                         LOCAL_REGION + "' for local DynamoDB testing")
@@ -846,7 +848,7 @@ def main():
     parser.add_argument("-p", "--profile",
                         help="AWS credentials file profile to use. Allows you to use a "
                         "profile instead accessKey, secretKey authentication")
-    parser.add_argument("-s", "--srcTable",
+    tablegroup.add_argument("-s", "--srcTable",
                         help="Source DynamoDB table name to backup or restore from, "
                         "use 'tablename*' for wildcard prefix selection or '*' for "
                         "all tables.  Mutually exclusive with --tag")
@@ -862,16 +864,16 @@ def main():
     parser.add_argument("--readCapacity",
                         help="Change the temp read capacity of the DynamoDB table to backup "
                         "from [optional]")
-    parser.add_argument("-t", "--tag", help="Tag to use for identifying tables to back up.  "
+    tablegroup.add_argument("-t", "--tag", help="Tag to use for identifying tables to back up.  "
                         "Mutually exclusive with srcTable.  Provided as KEY=VALUE")
     parser.add_argument("--writeCapacity",
                         help="Change the temp write capacity of the DynamoDB table to restore "
                         "to [defaults to " + str(RESTORE_WRITE_CAPACITY) + ", optional]")
-    parser.add_argument("--schemaOnly", action="store_true", default=False,
+    schemagroup.add_argument("--schemaOnly", action="store_true", default=False,
                         help="Backup or restore the schema only. Do not backup/restore data. "
                         "Can be used with both backup and restore modes. Cannot be used with "
                         "the --dataOnly [optional]")
-    parser.add_argument("--dataOnly", action="store_true", default=False,
+    schemagroup.add_argument("--dataOnly", action="store_true", default=False,
                         help="Restore data only. Do not delete/recreate schema [optional for "
                         "restore]")
     parser.add_argument("--skipThroughputUpdate", action="store_true", default=False,
@@ -892,6 +894,11 @@ def main():
     # Check to make sure that --dataOnly and --schemaOnly weren't simultaneously specified
     if args.schemaOnly and args.dataOnly:
         logging.info("Options --schemaOnly and --dataOnly are mutually exclusive.")
+        sys.exit(1)
+
+    # Check that an archive type is specified for backup to S3
+    if args.bucket and not args.archive:
+        logging.warning("An archive type (-a) must be specified for S3 bucket use")
         sys.exit(1)
 
     # instantiate connection
