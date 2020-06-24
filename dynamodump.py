@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """
     Simple backup and restore script for Amazon DynamoDB using boto to work similarly to mysqldump.
 
@@ -558,6 +558,11 @@ def do_backup(dynamo, read_capacity, tableQueue=None, srcTable=None):
             f.write(json.dumps(table_desc, indent=JSON_INDENT))
             f.close()
 
+            try:
+                table_billing_mode = table_desc["Table"]["BillingModeSummary"]["BillingMode"]
+            except KeyError:
+                table_billing_mode = "PROVISIONED"
+
             if not args.schemaOnly:
                 original_read_capacity = \
                     table_desc["Table"]["ProvisionedThroughput"]["ReadCapacityUnits"]
@@ -565,9 +570,10 @@ def do_backup(dynamo, read_capacity, tableQueue=None, srcTable=None):
                     table_desc["Table"]["ProvisionedThroughput"]["WriteCapacityUnits"]
 
                 # override table read capacity if specified
-                if read_capacity is not None and read_capacity != original_read_capacity:
-                    update_provisioned_throughput(dynamo, table_name,
-                                                  read_capacity, original_write_capacity)
+                if table_billing_mode != "PAY_PER_REQUEST":
+                    if read_capacity is not None and read_capacity != original_read_capacity:
+                        update_provisioned_throughput(dynamo, table_name,
+                                                    read_capacity, original_write_capacity)
 
                 # get table data
                 logging.info("Dumping table items for " + table_name)
@@ -600,12 +606,13 @@ def do_backup(dynamo, read_capacity, tableQueue=None, srcTable=None):
                         break
 
                 # revert back to original table read capacity if specified
-                if read_capacity is not None and read_capacity != original_read_capacity:
-                    update_provisioned_throughput(dynamo,
-                                                  table_name,
-                                                  original_read_capacity,
-                                                  original_write_capacity,
-                                                  False)
+                if table_billing_mode != "PAY_PER_REQUEST":
+                    if read_capacity is not None and read_capacity != original_read_capacity:
+                        update_provisioned_throughput(dynamo,
+                                                    table_name,
+                                                    original_read_capacity,
+                                                    original_write_capacity,
+                                                    False)
 
                 logging.info("Backup for " + table_name + " table completed. Time taken: " + str(
                     datetime.datetime.now().replace(microsecond=0) - start_time))
@@ -641,6 +648,10 @@ def do_restore(dynamo, sleep_interval, source_table, destination_table, write_ca
     original_write_capacity = table["ProvisionedThroughput"]["WriteCapacityUnits"]
     table_local_secondary_indexes = table.get("LocalSecondaryIndexes")
     table_global_secondary_indexes = table.get("GlobalSecondaryIndexes")
+    try:
+        table_billing_mode = table["BillingModeSummary"]["BillingMode"]
+    except KeyError:
+        table_billing_mode = "PROVISIONED"
 
     # override table write capacity if specified, else use RESTORE_WRITE_CAPACITY if original
     # write capacity is lower
@@ -691,12 +702,13 @@ def do_restore(dynamo, sleep_interval, source_table, destination_table, write_ca
         wait_for_active_table(dynamo, destination_table, "created")
     else:
         # update provisioned capacity
-        if int(write_capacity) > original_write_capacity:
-            update_provisioned_throughput(dynamo,
-                                          destination_table,
-                                          original_read_capacity,
-                                          write_capacity,
-                                          False)
+        if table_billing_mode != "PAY_PER_REQUEST":
+            if int(write_capacity) > original_write_capacity:
+                update_provisioned_throughput(dynamo,
+                                            destination_table,
+                                            original_read_capacity,
+                                            write_capacity,
+                                            False)
 
     if not args.schemaOnly:
         # read data files
@@ -733,12 +745,13 @@ def do_restore(dynamo, sleep_interval, source_table, destination_table, write_ca
 
         if not args.skipThroughputUpdate:
             # revert to original table write capacity if it has been modified
-            if int(write_capacity) != original_write_capacity:
-                update_provisioned_throughput(dynamo,
-                                              destination_table,
-                                              original_read_capacity,
-                                              original_write_capacity,
-                                              False)
+            if table_billing_mode != "PAY_PER_REQUEST":
+                if int(write_capacity) != original_write_capacity:
+                    update_provisioned_throughput(dynamo,
+                                                destination_table,
+                                                original_read_capacity,
+                                                original_write_capacity,
+                                                False)
 
             # loop through each GSI to check if it has changed and update if necessary
             if table_global_secondary_indexes is not None:
