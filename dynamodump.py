@@ -670,6 +670,17 @@ def do_restore(dynamo, sleep_interval, source_table, destination_table, write_ca
 
             if gsi["ProvisionedThroughput"]["WriteCapacityUnits"] < int(write_capacity):
                 gsi["ProvisionedThroughput"]["WriteCapacityUnits"] = int(write_capacity)
+                # Delete unnecessary keys from schema dump ready for create_table
+                [gsi.pop(key, None) for key in ["IndexStatus","IndexSizeBytes","ItemCount","IndexArn"]]
+                [gsi["ProvisionedThroughput"].pop(key, None) for key in ["LastDecreaseDateTime","NumberOfDecreasesToday","LastIncreaseDateTime"]]
+                if table_billing_mode == 'PAY_PER_REQUEST':
+                    [gsi.pop(key, None) for key in ["ProvisionedThroughput"]]
+
+    # Prepare LSI schema for create_table
+    if table_local_secondary_indexes is not None:
+        for lsi in table_local_secondary_indexes:
+            # Delete unnecessary keys from schema dump ready for create_table
+            [lsi.pop(key, None) for key in ["IndexSizeBytes","ItemCount","IndexArn"]]
 
     # temp provisioned throughput for restore
     table_provisioned_throughput = {"ReadCapacityUnits": int(original_read_capacity),
@@ -677,14 +688,18 @@ def do_restore(dynamo, sleep_interval, source_table, destination_table, write_ca
 
     if not args.dataOnly:
 
-        logging.info("Creating " + destination_table + " table with temp write capacity of " +
-                     str(write_capacity))
-
         while True:
             try:
-                dynamo.create_table(table_attribute_definitions, table_table_name, table_key_schema,
-                                    table_provisioned_throughput, table_local_secondary_indexes,
-                                    table_global_secondary_indexes)
+                if table_billing_mode == 'PAY_PER_REQUEST':
+                    logging.info("Creating " + destination_table + " table with Billing Mode PAY_PER_REQUEST" )
+                    dynamo.create_table(AttributeDefinitions=table_attribute_definitions, TableName=table_table_name, KeySchema=table_key_schema,
+                                    BillingMode=table_billing_mode,
+                                    GlobalSecondaryIndexes=table_global_secondary_indexes, LocalSecondaryIndexes=table_local_secondary_indexes)
+                else:
+                    logging.info("Creating " + destination_table + " table with temp write capacity of " + str(write_capacity))
+                    dynamo.create_table(AttributeDefinitions=table_attribute_definitions, TableName=table_table_name, KeySchema=table_key_schema,
+                                    BillingMode=table_billing_mode, ProvisionedThroughput=table_provisioned_throughput,
+                                    GlobalSecondaryIndexes=table_global_secondary_indexes, LocalSecondaryIndexes=table_local_secondary_indexes)
                 break
             except boto.exception.JSONResponseError as e:
                 if e.body["__type"] == "com.amazonaws.dynamodb.v20120810#LimitExceededException":
