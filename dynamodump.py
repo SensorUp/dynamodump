@@ -687,18 +687,23 @@ def do_restore(dynamo, sleep_interval, source_table, destination_table, write_ca
                                     "WriteCapacityUnits": int(write_capacity)}
 
     if not args.dataOnly:
+        if not args.pointInTimeRecovery:
+            point_in_time_recovery_specification = {"PointInTimeRecoveryEnabled": True}
+        else:
+            point_in_time_recovery_specification = {"PointInTimeRecoveryEnabled": False}
 
         while True:
             try:
                 if table_billing_mode == 'PAY_PER_REQUEST':
                     logging.info("Creating " + destination_table + " table with Billing Mode PAY_PER_REQUEST" )
                     dynamo.create_table(AttributeDefinitions=table_attribute_definitions, TableName=table_table_name, KeySchema=table_key_schema,
-                                    BillingMode=table_billing_mode,
+                                    BillingMode=table_billing_mode, PointInTimeRecoverySpecification=point_in_time_recovery_specification,
                                     GlobalSecondaryIndexes=table_global_secondary_indexes, LocalSecondaryIndexes=table_local_secondary_indexes)
                 else:
                     logging.info("Creating " + destination_table + " table with temp write capacity of " + str(write_capacity))
                     dynamo.create_table(AttributeDefinitions=table_attribute_definitions, TableName=table_table_name, KeySchema=table_key_schema,
                                     BillingMode=table_billing_mode, ProvisionedThroughput=table_provisioned_throughput,
+                                    PointInTimeRecoverySpecification=point_in_time_recovery_specification, 
                                     GlobalSecondaryIndexes=table_global_secondary_indexes, LocalSecondaryIndexes=table_local_secondary_indexes)
                 break
             except boto.exception.JSONResponseError as e:
@@ -878,6 +883,8 @@ def main():
                         "restore]")
     parser.add_argument("--skipThroughputUpdate", action="store_true", default=False,
                         help="Skip updating throughput values across tables [optional]")
+    parser.add_argument("--pointInTimeRecovery", action="store_true", default=False,
+                        help="Enable point in time recovery on restored table [optional]")
     parser.add_argument("--dumpPath", help="Directory to place and search for DynamoDB table "
                         "backups (defaults to use '" + str(DATA_DUMP) + "') [optional]",
                         default=str(DATA_DUMP))
