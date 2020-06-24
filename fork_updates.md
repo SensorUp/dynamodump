@@ -27,7 +27,7 @@ Attempt to identify the ones with relevant changes that might be integrated late
 * https://github.com/christophgysin/dynamodump/commits/master
   * fix provisioning GSI capacities
 * https://github.com/CliveJL/dynamodump/commit/faa6564900b8832d9bca1e6b0c111ff05420a913
-  * Update to Boto3 support. Add support for PAY_PER_REQUEST billing mode (On-demand).
+  * Update to Boto3 support. Add support for `PAY_PER_REQUEST` billing mode (On-demand).
 
 ### Bottom Of List to Top
 
