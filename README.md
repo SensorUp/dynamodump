@@ -9,15 +9,15 @@ Suitable for DynamoDB usages of smaller data volume which do not warrant the usa
 
 dynamodump supports local DynamoDB instances as well (tested with [DynamoDB Local](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/DynamoDBLocal.html)).
 
-Setup
------
+Quick Start
+-----------
 
 * Clone the repository
   * `git clone https://github.com/SensorUp/dynamodump`
 * Install python (if necessary)
   * <https://www.python.org/downloads/>
   * `python --version`
-  * This has been tested against 2.7 and 3.6
+  * This has been tested against 3.7
 * Install pip
   * <https://packaging.python.org/guides/installing-using-pip-and-virtual-environments/>
 * Install the requirements

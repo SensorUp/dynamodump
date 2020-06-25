@@ -1,12 +1,6 @@
 # Fork Updates
 
-Many forks have been created for this repository since the last time it was updated.
-
-Attempt to identify the ones with relevant changes that might be integrated later on.
-
-## Forks, Commits, and Change Summaries
-
-### Top Of List to Bottom
+Many forks have been created for this repository since the last time it was updated. This document attempts to identify the ones with the most useful changes.
 
 * <https://github.com/10eTechnology/dynamodump/commit/568a29e26fc056a46e9babf1db118b417fe6251b>
   * adding multiprocessing support
@@ -28,9 +22,22 @@ Attempt to identify the ones with relevant changes that might be integrated late
   * fix provisioning GSI capacities
 * <https://github.com/CliveJL/dynamodump/commit/faa6564900b8832d9bca1e6b0c111ff05420a913>
   * Update to Boto3 support. Add support for `PAY_PER_REQUEST` billing mode (On-demand).
-
-### Bottom Of List to Top
-
+* <https://github.com/bchew/dynamodump/compare/master...dannyn:master>
+  * Filter attributes on backup
+* <https://github.com/bchew/dynamodump/compare/master...dixahq:master>
+  * Adds S3 upload
+* <https://github.com/bchew/dynamodump/compare/master...EldarSagirov:master>
+  * Adds security token for local DynamoDB
+* <https://github.com/bchew/dynamodump/compare/master...faiyeah:master>
+  * Fixed process hangs when backing up a non-exist table
+* <https://github.com/bchew/dynamodump/compare/master...LimbicEntertainment:master>
+  * FIxes On Demand - moves to Boto3
+* <https://github.com/bchew/dynamodump/compare/master...rstaveley:master>
+  * Fixes On Demand - moves to Boto3; adds support for ECS, Autoscaling and AWS batch
+* <https://github.com/bchew/dynamodump/compare/master...taherbs:master>
+  * Adding make automation + Dockerizing further
+* <https://github.com/bchew/dynamodump/compare/master...uktrade:master>
+  * Expand docker config (conflicts)
 * <https://github.com/xebia-france/dynamodump>
   * This branch is 10 commits ahead, 1 commit behind bchew:master.
   * Implement read rate limiting
