@@ -34,10 +34,8 @@ try:
 except ImportError:
     from urllib2 import urlopen, URLError, HTTPError
 
-import boto.dynamodb2.layer1
-from boto.dynamodb2.exceptions import ProvisionedThroughputExceededException
-import botocore
 import boto3
+from botocore.exceptions import ClientError
 import decimal
 
 
@@ -160,7 +158,7 @@ def do_put_bucket_object(profile, region, bucket, bucket_object):
                        ExtraArgs={
                            "ServerSideEncryption": "AES256"
                        })
-    except botocore.exceptions.ClientError as e:
+    except ClientError as e:
         logging.exception("Failed to put file to S3 bucket\n\n" + str(e))
         sys.exit(1)
 
@@ -186,7 +184,7 @@ def do_get_s3_archive(profile, region, bucket, table, archive):
         s3.head_bucket(
             Bucket=bucket
         )
-    except botocore.exceptions.ClientError as e:
+    except ClientError as e:
         logging.exception("S3 bucket " + bucket + " does not exist. "
                           "Can't get backup file\n\n" + str(e))
         sys.exit(1)
@@ -196,7 +194,7 @@ def do_get_s3_archive(profile, region, bucket, table, archive):
             Bucket=bucket,
             Prefix=args.dumpPath
         )
-    except botocore.exceptions.ClientError as e:
+    except ClientError as e:
         logging.exception("Issue listing contents of bucket " + bucket + "\n\n" + str(e))
         sys.exit(1)
 
@@ -380,14 +378,18 @@ def delete_table(conn, sleep_interval, table_name):
             except conn.exceptions.LimitExceededException as e:
                 logging.info("Limit exceeded, retrying deletion of " + table_name + "..")
                 time.sleep(sleep_interval)
-            except conn.exceptions.ThrottlingException as e:
-                logging.info("Control plane limit exceeded, retrying deletion of " +
-                                table_name + "..")
-                time.sleep(sleep_interval)
             except conn.exceptions.ResourceInUseException as e:
                 logging.info(table_name + " table is in use, retrying deletion of " +
                                 table_name + "..")
                 time.sleep(sleep_interval)
+            except ClientError as e:
+                if e.response["Error"]["Code"] == "ThrottlingException":
+                    logging.info("Control plane limit exceeded, retrying deletion of " +
+                                    table_name + "..")
+                    time.sleep(sleep_interval)
+                else:
+                    logging.exception(e)
+                    sys.exit(1)
             except Exception as e:
                 logging.exception(e)
                 sys.exit(1)
@@ -481,10 +483,14 @@ def update_provisioned_throughput(conn, table_name, read_capacity, write_capacit
         except conn.exceptions.LimitExceededException as e:
             logging.info("Limit exceeded, retrying updating throughput of " + table_name + "..")
             time.sleep(sleep_interval)
-        except conn.exceptions.ThrottlingException as e:
-            logging.info("Control plane limit exceeded, retrying updating throughput of " +
-                            table_name + "..")
-            time.sleep(sleep_interval)
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ThrottlingException":
+                logging.info("Control plane limit exceeded, retrying updating throughput of " +
+                                table_name + "..")
+                time.sleep(sleep_interval)
+            else:
+                logging.exception(e)
+                sys.exit(1)
         except Exception as e:
             logging.exception(e)
             sys.exit(1)
@@ -537,10 +543,14 @@ def do_empty(dynamo, table_name):
         except dynamo.exceptions.LimitExceededException as e:
             logging.info("Limit exceeded, retrying creation of " + table_name + "..")
             time.sleep(sleep_interval)
-        except dynamo.exceptions.ThrottlingException as e:
-            logging.info("Control plane limit exceeded, retrying creation of " +
-                            table_name + "..")
-            time.sleep(sleep_interval)
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ThrottlingException":
+                logging.info("Control plane limit exceeded, retrying creation of " +
+                                table_name + "..")
+                time.sleep(sleep_interval)
+            else:
+                logging.exception(e)
+                sys.exit(1)
         except Exception as e:
             logging.exception(e)
             sys.exit(1)
@@ -609,7 +619,7 @@ def do_backup(dynamo, read_capacity, tableQueue=None, srcTable=None):
                 while True:
                     try:
                         scanned_table = dynamo.scan(**scan_kwargs)
-                    except ProvisionedThroughputExceededException:
+                    except dynamo.exceptions.ProvisionedThroughputExceededException:
                         logging.error("EXCEEDED THROUGHPUT ON TABLE " +
                                       table_name + ".  BACKUP FOR IT IS USELESS.")
                         tableQueue.task_done()
@@ -746,10 +756,14 @@ def do_restore(dynamo, sleep_interval, source_table, destination_table, write_ca
             except dynamo.exceptions.LimitExceededException as e:
                 logging.info("Limit exceeded, retrying creation of " + destination_table + "..")
                 time.sleep(sleep_interval)
-            except dynamo.exceptions.ThrottlingException as e:
-                logging.info("Control plane limit exceeded, retrying creation of " +
-                                destination_table + "..")
-                time.sleep(sleep_interval)
+            except ClientError as e:
+                if e.response["Error"]["Code"] == "ThrottlingException":
+                    logging.info("Control plane limit exceeded, retrying creation of " +
+                                    destination_table + "..")
+                    time.sleep(sleep_interval)
+                else:
+                    logging.exception(e)
+                    sys.exit(1)
             except Exception as e:
                 logging.exception(e)
                 sys.exit(1)
@@ -840,10 +854,14 @@ def do_restore(dynamo, sleep_interval, source_table, destination_table, write_ca
                         logging.info("Limit exceeded, retrying updating throughput of " +
                                     "GlobalSecondaryIndexes in " + destination_table + "..")
                         time.sleep(sleep_interval)
-                    except dynamo.exceptions.ThrottlingException as e:
-                        logging.info("Control plane limit exceeded, retrying updating throughput of " +
-                                    "GlobalSecondaryIndexes in " + destination_table + "..")
-                        time.sleep(sleep_interval)
+                    except ClientError as e:
+                        if e.response["Error"]["Code"] == "ThrottlingException":
+                            logging.info("Control plane limit exceeded, retrying updating throughput of " +
+                                        "GlobalSecondaryIndexes in " + destination_table + "..")
+                            time.sleep(sleep_interval)
+                        else:
+                            logging.exception(e)
+                            sys.exit(1)
                     except Exception as e:
                         logging.exception(e)
                         sys.exit(1)
