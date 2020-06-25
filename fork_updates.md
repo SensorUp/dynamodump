@@ -22,6 +22,7 @@ Many forks have been created for this repository since the last time it was upda
   * fix provisioning GSI capacities
 * <https://github.com/CliveJL/dynamodump/commit/faa6564900b8832d9bca1e6b0c111ff05420a913>
   * Update to Boto3 support. Add support for `PAY_PER_REQUEST` billing mode (On-demand).
+  * The SensorUp fork drew from this fork's code, but applied it, with fixes, to the original branch in order to retain some of the code removed from the original
 * <https://github.com/bchew/dynamodump/compare/master...dannyn:master>
   * Filter attributes on backup
 * <https://github.com/bchew/dynamodump/compare/master...dixahq:master>
