@@ -38,6 +38,7 @@ import boto.dynamodb2.layer1
 from boto.dynamodb2.exceptions import ProvisionedThroughputExceededException
 import botocore
 import boto3
+import decimal
 
 
 JSON_INDENT = 2
@@ -58,6 +59,21 @@ DEFAULT_PREFIX_SEPARATOR = "-"
 MAX_NUMBER_BACKUP_WORKERS = 25
 METADATA_URL = "http://169.254.169.254/latest/meta-data/"
 
+# Helper class to convert DynamoDB schema dump to valid JSON
+class EncoderHelper(json.JSONEncoder):
+
+    # override default
+    def default(self, obj): # pylint: disable=method-hidden
+        if isinstance(obj, decimal.Decimal):
+            if obj % 1 > 0:
+                return float(obj)
+            else:
+                return int(obj)
+        if isinstance(obj, set):
+            return list(obj)
+        if isinstance(obj, datetime.datetime):
+            return obj.isoformat()
+        return json.JSONEncoder.default(self, obj)
 
 def _get_aws_client(profile, region, service):
     """
@@ -281,7 +297,7 @@ def get_table_name_matches(conn, table_name_wildcard, separator):
     last_evaluated_table_name = None
 
     while True:
-        table_list = conn.list_tables(exclusive_start_table_name=last_evaluated_table_name)
+        table_list = conn.list_tables(ExclusiveStartTableName=last_evaluated_table_name)
         all_tables.extend(table_list["TableNames"])
 
         try:
@@ -356,7 +372,7 @@ def delete_table(conn, sleep_interval, table_name):
             # delete table if exists
             table_exist = True
             try:
-                conn.delete_table(table_name)
+                conn.delete_table(TableName=table_name)
             except boto.exception.JSONResponseError as e:
                 if e.body["__type"] == "com.amazonaws.dynamodb.v20120810#ResourceNotFoundException":
                     table_exist = False
@@ -381,7 +397,7 @@ def delete_table(conn, sleep_interval, table_name):
             try:
                 while True:
                     logging.info("Waiting for " + table_name + " table to be deleted.. [" +
-                                 conn.describe_table(table_name)["Table"]["TableStatus"] + "]")
+                                 conn.describe_table(TableName=table_name)["Table"]["TableStatus"] + "]")
                     time.sleep(sleep_interval)
             except boto.exception.JSONResponseError as e:
                 if e.body["__type"] == "com.amazonaws.dynamodb.v20120810#ResourceNotFoundException":
@@ -415,7 +431,7 @@ def batch_write(conn, sleep_interval, table_name, put_requests):
     i = 1
     sleep = sleep_interval
     while True:
-        response = conn.batch_write_item(request_items)
+        response = conn.batch_write_item(RequestItems=request_items)
         unprocessed_items = response["UnprocessedItems"]
 
         if len(unprocessed_items) == 0:
@@ -430,7 +446,7 @@ def batch_write(conn, sleep_interval, table_name, put_requests):
             i += 1
         else:
             logging.info("Max retries reached, failed to processed batch write: " +
-                         json.dumps(unprocessed_items, indent=JSON_INDENT))
+                         json.dumps(unprocessed_items, indent=JSON_INDENT, cls=EncoderHelper))
             logging.info("Ignoring and continuing..")
             break
 
@@ -441,9 +457,9 @@ def wait_for_active_table(conn, table_name, verb):
     """
 
     while True:
-        if conn.describe_table(table_name)["Table"]["TableStatus"] != "ACTIVE":
+        if conn.describe_table(TableName=table_name)["Table"]["TableStatus"] != "ACTIVE":
             logging.info("Waiting for " + table_name + " table to be " + verb + ".. [" +
-                         conn.describe_table(table_name)["Table"]["TableStatus"] + "]")
+                         conn.describe_table(TableName=table_name)["Table"]["TableStatus"] + "]")
             time.sleep(sleep_interval)
         else:
             logging.info(table_name + " " + verb + ".")
@@ -459,8 +475,8 @@ def update_provisioned_throughput(conn, table_name, read_capacity, write_capacit
                  str(read_capacity) + ", write capacity to: " + str(write_capacity))
     while True:
         try:
-            conn.update_table(table_name,
-                              {"ReadCapacityUnits": int(read_capacity),
+            conn.update_table(TableName=table_name,
+                              ProvisionedThroughput={"ReadCapacityUnits": int(read_capacity),
                                "WriteCapacityUnits": int(write_capacity)})
             break
         except boto.exception.JSONResponseError as e:
@@ -486,7 +502,7 @@ def do_empty(dynamo, table_name):
 
     # get table schema
     logging.info("Fetching table schema for " + table_name)
-    table_data = dynamo.describe_table(table_name)
+    table_data = dynamo.describe_table(TableName=table_name)
 
     table_desc = table_data["Table"]
     table_attribute_definitions = table_desc["AttributeDefinitions"]
@@ -495,6 +511,10 @@ def do_empty(dynamo, table_name):
     original_write_capacity = table_desc["ProvisionedThroughput"]["WriteCapacityUnits"]
     table_local_secondary_indexes = table_desc.get("LocalSecondaryIndexes")
     table_global_secondary_indexes = table_desc.get("GlobalSecondaryIndexes")
+    try:
+        table_billing_mode = table_desc["BillingModeSummary"]["BillingMode"]
+    except KeyError:
+        table_billing_mode = "PROVISIONED"
 
     table_provisioned_throughput = {"ReadCapacityUnits": int(original_read_capacity),
                                     "WriteCapacityUnits": int(original_write_capacity)}
@@ -507,9 +527,11 @@ def do_empty(dynamo, table_name):
 
     while True:
         try:
-            dynamo.create_table(table_attribute_definitions, table_name, table_key_schema,
-                                table_provisioned_throughput, table_local_secondary_indexes,
-                                table_global_secondary_indexes)
+            dynamo.create_table(AttributeDefinitions=table_attribute_definitions, TableName=table_name,
+                                KeySchema=table_key_schema, BillingMode=table_billing_mode,
+                                ProvisionedThroughput=table_provisioned_throughput,
+                                LocalSecondaryIndexes=table_local_secondary_indexes,
+                                GlobalSecondaryIndexes=table_global_secondary_indexes)
             break
         except boto.exception.JSONResponseError as e:
             if e.body["__type"] == "com.amazonaws.dynamodb.v20120810#LimitExceededException":
@@ -554,8 +576,8 @@ def do_backup(dynamo, read_capacity, tableQueue=None, srcTable=None):
             # get table schema
             logging.info("Dumping table schema for " + table_name)
             f = open(args.dumpPath + os.sep + table_name + os.sep + SCHEMA_FILE, "w+")
-            table_desc = dynamo.describe_table(table_name)
-            f.write(json.dumps(table_desc, indent=JSON_INDENT))
+            table_desc = dynamo.describe_table(TableName=table_name)
+            f.write(json.dumps(table_desc, indent=JSON_INDENT, cls=EncoderHelper))
             f.close()
 
             try:
@@ -581,11 +603,12 @@ def do_backup(dynamo, read_capacity, tableQueue=None, srcTable=None):
 
                 i = 1
                 last_evaluated_key = None
+                # do not include ExclusiveStartKey in first iteration
+                scan_kwargs = { "TableName": table_name}
 
                 while True:
                     try:
-                        scanned_table = dynamo.scan(table_name,
-                                                    exclusive_start_key=last_evaluated_key)
+                        scanned_table = dynamo.scan(**scan_kwargs)
                     except ProvisionedThroughputExceededException:
                         logging.error("EXCEEDED THROUGHPUT ON TABLE " +
                                       table_name + ".  BACKUP FOR IT IS USELESS.")
@@ -595,13 +618,14 @@ def do_backup(dynamo, read_capacity, tableQueue=None, srcTable=None):
                         args.dumpPath + os.sep + table_name + os.sep + DATA_DIR + os.sep +
                         str(i).zfill(4) + ".json", "w+"
                     )
-                    f.write(json.dumps(scanned_table, indent=JSON_INDENT))
+                    f.write(json.dumps(scanned_table, indent=JSON_INDENT, cls=EncoderHelper))
                     f.close()
 
                     i += 1
 
                     try:
                         last_evaluated_key = scanned_table["LastEvaluatedKey"]
+                        scan_kwargs = { "TableName": table_name, "ExclusiveStartKey": last_evaluated_key}
                     except KeyError:
                         break
 
@@ -696,15 +720,16 @@ def do_restore(dynamo, sleep_interval, source_table, destination_table, write_ca
             try:
                 if table_billing_mode == 'PAY_PER_REQUEST':
                     logging.info("Creating " + destination_table + " table with Billing Mode PAY_PER_REQUEST" )
-                    dynamo.create_table(AttributeDefinitions=table_attribute_definitions, TableName=table_table_name, KeySchema=table_key_schema,
-                                    BillingMode=table_billing_mode, PointInTimeRecoverySpecification=point_in_time_recovery_specification,
-                                    GlobalSecondaryIndexes=table_global_secondary_indexes, LocalSecondaryIndexes=table_local_secondary_indexes)
+                    dynamo.create_table(AttributeDefinitions=table_attribute_definitions, TableName=table_table_name,
+                                    KeySchema=table_key_schema, BillingMode=table_billing_mode,
+                                    GlobalSecondaryIndexes=table_global_secondary_indexes,
+                                    LocalSecondaryIndexes=table_local_secondary_indexes)
                 else:
                     logging.info("Creating " + destination_table + " table with temp write capacity of " + str(write_capacity))
-                    dynamo.create_table(AttributeDefinitions=table_attribute_definitions, TableName=table_table_name, KeySchema=table_key_schema,
-                                    BillingMode=table_billing_mode, ProvisionedThroughput=table_provisioned_throughput,
-                                    PointInTimeRecoverySpecification=point_in_time_recovery_specification, 
-                                    GlobalSecondaryIndexes=table_global_secondary_indexes, LocalSecondaryIndexes=table_local_secondary_indexes)
+                    dynamo.create_table(AttributeDefinitions=table_attribute_definitions, TableName=table_table_name,
+                                    KeySchema=table_key_schema, BillingMode=table_billing_mode,
+                                    GlobalSecondaryIndexes=table_global_secondary_indexes,
+                                    LocalSecondaryIndexes=table_local_secondary_indexes)
                 break
             except boto.exception.JSONResponseError as e:
                 if e.body["__type"] == "com.amazonaws.dynamodb.v20120810#LimitExceededException":
@@ -796,8 +821,8 @@ def do_restore(dynamo, sleep_interval, source_table, destination_table, write_ca
                              " global secondary indexes write capacities as necessary..")
                 while True:
                     try:
-                        dynamo.update_table(destination_table,
-                                            global_secondary_index_updates=gsi_data)
+                        dynamo.update_table(TableName=destination_table,
+                                            GlobalSecondaryIndexUpdates=gsi_data)
                         break
                     except boto.exception.JSONResponseError as e:
                         if (e.body["__type"] ==
@@ -910,19 +935,17 @@ def main():
 
     # instantiate connection
     if args.region == LOCAL_REGION:
-        conn = boto.dynamodb2.layer1.DynamoDBConnection(aws_access_key_id=args.accessKey,
-                                                        aws_secret_access_key=args.secretKey,
-                                                        host=args.host,
-                                                        port=int(args.port),
-                                                        is_secure=False)
+        boto3.client('dynamodb', endpoint_url='http://'+args.host+':'+args.port)
         sleep_interval = LOCAL_SLEEP_INTERVAL
     else:
         if not args.profile:
-            conn = boto.dynamodb2.connect_to_region(args.region, aws_access_key_id=args.accessKey,
+            session = boto3.Session(region_name=args.region, aws_access_key_id=args.accessKey,
                                                     aws_secret_access_key=args.secretKey)
+            conn = boto3.client('dynamodb', region_name=args.region)
             sleep_interval = AWS_SLEEP_INTERVAL
         else:
-            conn = boto.dynamodb2.connect_to_region(args.region, profile_name=args.profile)
+            session = boto3.Session(profile_name=args.profile, region_name=args.region)
+            conn = session.client('dynamodb')
             sleep_interval = AWS_SLEEP_INTERVAL
 
     # don't proceed if connection is not established
