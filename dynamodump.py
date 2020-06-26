@@ -293,13 +293,15 @@ def get_table_name_matches(conn, table_name_wildcard, separator):
 
     all_tables = []
     last_evaluated_table_name = None
+    list_kwargs = {}
 
     while True:
-        table_list = conn.list_tables(ExclusiveStartTableName=last_evaluated_table_name)
+        table_list = conn.list_tables(**list_kwargs)
         all_tables.extend(table_list["TableNames"])
 
         try:
             last_evaluated_table_name = table_list["LastEvaluatedTableName"]
+            list_kwargs = {"ExclusiveStartTableName": last_evaluated_table_name}
         except KeyError:
             break
 
@@ -408,6 +410,93 @@ def delete_table(conn, sleep_interval, table_name):
                 logging.exception(e)
                 sys.exit(1)
 
+def create_table(conn, sleep_interval, table_name, table_data):
+    """
+    Create table table_name
+    """
+    table = table_data["Table"]
+    table_attribute_definitions = table["AttributeDefinitions"]
+    table_key_schema = table["KeySchema"]
+    original_read_capacity = table["ProvisionedThroughput"]["ReadCapacityUnits"]
+    original_write_capacity = table["ProvisionedThroughput"]["WriteCapacityUnits"]
+    table_local_secondary_indexes = table.get("LocalSecondaryIndexes")
+    table_global_secondary_indexes = table.get("GlobalSecondaryIndexes")
+    try:
+        table_billing_mode = table["BillingModeSummary"]["BillingMode"]
+    except KeyError:
+        table_billing_mode = "PROVISIONED"
+
+    if table_global_secondary_indexes is not None:
+        for gsi in table_global_secondary_indexes:
+            # Delete unnecessary keys from schema dump ready for create_table
+            [gsi.pop(key, None) for key in ["IndexStatus","IndexSizeBytes","ItemCount","IndexArn"]]
+            try:
+                [gsi["ProvisionedThroughput"].pop(key, None) for key in ["LastDecreaseDateTime","NumberOfDecreasesToday","LastIncreaseDateTime"]]
+                if table_billing_mode == 'PAY_PER_REQUEST':
+                    [gsi.pop(key, None) for key in ["ProvisionedThroughput"]]
+            except KeyError as e:
+                pass
+
+    # Prepare LSI schema for create_table
+    if table_local_secondary_indexes is not None:
+        for lsi in table_local_secondary_indexes:
+            # Delete unnecessary keys from schema dump ready for create_table
+            [lsi.pop(key, None) for key in ["IndexSizeBytes","ItemCount","IndexArn"]]
+
+    # temp provisioned throughput for restore
+    table_provisioned_throughput = {"ReadCapacityUnits": int(original_read_capacity),
+                                    "WriteCapacityUnits": int(original_write_capacity)}
+
+    if not args.dataOnly:
+        table_creation_kwargs = {
+            "AttributeDefinitions": table_attribute_definitions,
+            "TableName": table_name,
+            "KeySchema": table_key_schema,
+            "BillingMode": table_billing_mode
+        }
+
+        if table_global_secondary_indexes is not None:
+            table_creation_kwargs = {
+                **table_creation_kwargs,
+                "GlobalSecondaryIndexes": table_global_secondary_indexes
+            }
+
+        if table_local_secondary_indexes is not None:
+            table_creation_kwargs = {
+                **table_creation_kwargs,
+                "LocalSecondaryIndexes": table_local_secondary_indexes
+            }
+
+        if table_billing_mode == 'PAY_PER_REQUEST':
+            logging.info("Creating " + table_name + " table with Billing Mode PAY_PER_REQUEST" )
+        else:
+            logging.info("Creating " + table_name + " table with temp write capacity of " + str(original_write_capacity))
+            table_creation_kwargs = {
+                **table_creation_kwargs,
+                "ProvisionedThroughput": table_provisioned_throughput
+            }
+
+        while True:
+            try:
+                conn.create_table(**table_creation_kwargs)
+                break
+            except conn.exceptions.LimitExceededException as e:
+                logging.info("Limit exceeded, retrying creation of " + table_name + "..")
+                time.sleep(sleep_interval)
+            except ClientError as e:
+                if e.response["Error"]["Code"] == "ThrottlingException":
+                    logging.info("Control plane limit exceeded, retrying creation of " +
+                                    table_name + "..")
+                    time.sleep(sleep_interval)
+                else:
+                    logging.exception(e)
+                    sys.exit(1)
+            except Exception as e:
+                logging.exception(e)
+                sys.exit(1)
+
+        # wait for table creation completion
+        wait_for_active_table(conn, table_name, "created")
 
 def mkdir_p(path):
     """
@@ -511,52 +600,13 @@ def do_empty(dynamo, table_name):
     logging.info("Fetching table schema for " + table_name)
     table_data = dynamo.describe_table(TableName=table_name)
 
-    table_desc = table_data["Table"]
-    table_attribute_definitions = table_desc["AttributeDefinitions"]
-    table_key_schema = table_desc["KeySchema"]
-    original_read_capacity = table_desc["ProvisionedThroughput"]["ReadCapacityUnits"]
-    original_write_capacity = table_desc["ProvisionedThroughput"]["WriteCapacityUnits"]
-    table_local_secondary_indexes = table_desc.get("LocalSecondaryIndexes")
-    table_global_secondary_indexes = table_desc.get("GlobalSecondaryIndexes")
-    try:
-        table_billing_mode = table_desc["BillingModeSummary"]["BillingMode"]
-    except KeyError:
-        table_billing_mode = "PROVISIONED"
-
-    table_provisioned_throughput = {"ReadCapacityUnits": int(original_read_capacity),
-                                    "WriteCapacityUnits": int(original_write_capacity)}
-
     logging.info("Deleting Table " + table_name)
 
     delete_table(dynamo, sleep_interval, table_name)
 
     logging.info("Creating Table " + table_name)
 
-    while True:
-        try:
-            dynamo.create_table(AttributeDefinitions=table_attribute_definitions, TableName=table_name,
-                                KeySchema=table_key_schema, BillingMode=table_billing_mode,
-                                ProvisionedThroughput=table_provisioned_throughput,
-                                LocalSecondaryIndexes=table_local_secondary_indexes,
-                                GlobalSecondaryIndexes=table_global_secondary_indexes)
-            break
-        except dynamo.exceptions.LimitExceededException as e:
-            logging.info("Limit exceeded, retrying creation of " + table_name + "..")
-            time.sleep(sleep_interval)
-        except ClientError as e:
-            if e.response["Error"]["Code"] == "ThrottlingException":
-                logging.info("Control plane limit exceeded, retrying creation of " +
-                                table_name + "..")
-                time.sleep(sleep_interval)
-            else:
-                logging.exception(e)
-                sys.exit(1)
-        except Exception as e:
-            logging.exception(e)
-            sys.exit(1)
-
-    # wait for table creation completion
-    wait_for_active_table(dynamo, table_name, "created")
+    create_table(dynamo, sleep_interval, table_name, table_data)
 
     logging.info("Recreation of " + table_name + " completed. Time taken: " + str(
         datetime.datetime.now().replace(microsecond=0) - start_time))
@@ -673,14 +723,12 @@ def do_restore(dynamo, sleep_interval, source_table, destination_table, write_ca
             logging.info("Cannot find \"%s/%s\" directory containing dump files!"
                          % (CURRENT_WORKING_DIR, source_table))
             sys.exit(1)
+
     table_data = json.load(open(dump_data_path + os.sep + source_table + os.sep + SCHEMA_FILE))
+
     table = table_data["Table"]
-    table_attribute_definitions = table["AttributeDefinitions"]
-    table_table_name = destination_table
-    table_key_schema = table["KeySchema"]
     original_read_capacity = table["ProvisionedThroughput"]["ReadCapacityUnits"]
     original_write_capacity = table["ProvisionedThroughput"]["WriteCapacityUnits"]
-    table_local_secondary_indexes = table.get("LocalSecondaryIndexes")
     table_global_secondary_indexes = table.get("GlobalSecondaryIndexes")
     try:
         table_billing_mode = table["BillingModeSummary"]["BillingMode"]
@@ -695,81 +743,18 @@ def do_restore(dynamo, sleep_interval, source_table, destination_table, write_ca
         else:
             write_capacity = original_write_capacity
 
-    # override GSI write capacities if specified, else use RESTORE_WRITE_CAPACITY if original
-    # write capacity is lower
     original_gsi_write_capacities = []
     if table_global_secondary_indexes is not None:
         for gsi in table_global_secondary_indexes:
-            original_gsi_write_capacities.append(gsi["ProvisionedThroughput"]["WriteCapacityUnits"])
-
-            if gsi["ProvisionedThroughput"]["WriteCapacityUnits"] < int(write_capacity):
-                gsi["ProvisionedThroughput"]["WriteCapacityUnits"] = int(write_capacity)
-                # Delete unnecessary keys from schema dump ready for create_table
-                [gsi.pop(key, None) for key in ["IndexStatus","IndexSizeBytes","ItemCount","IndexArn"]]
-                [gsi["ProvisionedThroughput"].pop(key, None) for key in ["LastDecreaseDateTime","NumberOfDecreasesToday","LastIncreaseDateTime"]]
-                if table_billing_mode == 'PAY_PER_REQUEST':
-                    [gsi.pop(key, None) for key in ["ProvisionedThroughput"]]
-
-    # Prepare LSI schema for create_table
-    if table_local_secondary_indexes is not None:
-        for lsi in table_local_secondary_indexes:
-            # Delete unnecessary keys from schema dump ready for create_table
-            [lsi.pop(key, None) for key in ["IndexSizeBytes","ItemCount","IndexArn"]]
-
-    # temp provisioned throughput for restore
-    table_provisioned_throughput = {"ReadCapacityUnits": int(original_read_capacity),
-                                    "WriteCapacityUnits": int(write_capacity)}
+            try:
+                original_gsi_write_capacities.append(gsi["ProvisionedThroughput"]["WriteCapacityUnits"])
+                if gsi["ProvisionedThroughput"]["WriteCapacityUnits"] < int(write_capacity):
+                    gsi["ProvisionedThroughput"]["WriteCapacityUnits"] = int(write_capacity)
+            except KeyError as e:
+                pass
 
     if not args.dataOnly:
-        table_creation_kwargs = {
-            "AttributeDefinitions": table_attribute_definitions,
-            "TableName": table_table_name,
-            "KeySchema": table_key_schema,
-            "BillingMode": table_billing_mode
-        }
-
-        if table_global_secondary_indexes is not None:
-            table_creation_kwargs = {
-                **table_creation_kwargs,
-                "GlobalSecondaryIndexes": table_global_secondary_indexes
-            }
-
-        if table_local_secondary_indexes is not None:
-            table_creation_kwargs = {
-                **table_creation_kwargs,
-                "LocalSecondaryIndexes": table_local_secondary_indexes
-            }
-
-        if table_billing_mode == 'PAY_PER_REQUEST':
-            logging.info("Creating " + destination_table + " table with Billing Mode PAY_PER_REQUEST" )
-        else:
-            logging.info("Creating " + destination_table + " table with temp write capacity of " + str(write_capacity))
-            table_creation_kwargs = {
-                **table_creation_kwargs,
-                "ProvisionedThroughput": table_provisioned_throughput
-            }
-
-        while True:
-            try:
-                dynamo.create_table(**table_creation_kwargs)
-                break
-            except dynamo.exceptions.LimitExceededException as e:
-                logging.info("Limit exceeded, retrying creation of " + destination_table + "..")
-                time.sleep(sleep_interval)
-            except ClientError as e:
-                if e.response["Error"]["Code"] == "ThrottlingException":
-                    logging.info("Control plane limit exceeded, retrying creation of " +
-                                    destination_table + "..")
-                    time.sleep(sleep_interval)
-                else:
-                    logging.exception(e)
-                    sys.exit(1)
-            except Exception as e:
-                logging.exception(e)
-                sys.exit(1)
-
-        # wait for table creation completion
-        wait_for_active_table(dynamo, destination_table, "created")
+        create_table(dynamo, sleep_interval, destination_table, table_data)
     else:
         # update provisioned capacity
         if table_billing_mode != "PAY_PER_REQUEST":
@@ -813,15 +798,14 @@ def do_restore(dynamo, sleep_interval, source_table, destination_table, write_ca
             if len(put_requests) > 0:
                 batch_write(dynamo, BATCH_WRITE_SLEEP_INTERVAL, destination_table, put_requests)
 
-        if not args.skipThroughputUpdate:
+        if not args.skipThroughputUpdate and table_billing_mode != "PAY_PER_REQUEST":
             # revert to original table write capacity if it has been modified
-            if table_billing_mode != "PAY_PER_REQUEST":
-                if int(write_capacity) != original_write_capacity:
-                    update_provisioned_throughput(dynamo,
-                                                destination_table,
-                                                original_read_capacity,
-                                                original_write_capacity,
-                                                False)
+            if int(write_capacity) != original_write_capacity:
+                update_provisioned_throughput(dynamo,
+                                            destination_table,
+                                            original_read_capacity,
+                                            original_write_capacity,
+                                            False)
 
             # loop through each GSI to check if it has changed and update if necessary
             if table_global_secondary_indexes is not None:
@@ -876,7 +860,7 @@ def do_restore(dynamo, sleep_interval, source_table, destination_table, write_ca
         if args.pointInTimeRecovery:
             try:
                 dynamo.update_continuous_backups(
-                    TableName=table_table_name,
+                    TableName=destination_table,
                     PointInTimeRecoverySpecification={
                         "PointInTimeRecoveryEnabled": True
                     }
