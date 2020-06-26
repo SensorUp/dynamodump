@@ -293,13 +293,15 @@ def get_table_name_matches(conn, table_name_wildcard, separator):
 
     all_tables = []
     last_evaluated_table_name = None
+    list_kwargs = {}
 
     while True:
-        table_list = conn.list_tables(ExclusiveStartTableName=last_evaluated_table_name)
+        table_list = conn.list_tables(**list_kwargs)
         all_tables.extend(table_list["TableNames"])
 
         try:
             last_evaluated_table_name = table_list["LastEvaluatedTableName"]
+            list_kwargs = {"ExclusiveStartTableName": last_evaluated_table_name}
         except KeyError:
             break
 
@@ -523,6 +525,28 @@ def do_empty(dynamo, table_name):
     except KeyError:
         table_billing_mode = "PROVISIONED"
 
+    # override GSI write capacities if specified, else use RESTORE_WRITE_CAPACITY if original
+    # write capacity is lower
+    original_gsi_write_capacities = []
+    if table_global_secondary_indexes is not None:
+        for gsi in table_global_secondary_indexes:
+            original_gsi_write_capacities.append(gsi["ProvisionedThroughput"]["WriteCapacityUnits"])
+
+            if gsi["ProvisionedThroughput"]["WriteCapacityUnits"] < int(original_write_capacity):
+                gsi["ProvisionedThroughput"]["WriteCapacityUnits"] = int(original_write_capacity)
+
+            # Delete unnecessary keys from schema dump ready for create_table
+            [gsi.pop(key, None) for key in ["IndexStatus","IndexSizeBytes","ItemCount","IndexArn"]]
+            [gsi["ProvisionedThroughput"].pop(key, None) for key in ["LastDecreaseDateTime","NumberOfDecreasesToday","LastIncreaseDateTime"]]
+            if table_billing_mode == 'PAY_PER_REQUEST':
+                [gsi.pop(key, None) for key in ["ProvisionedThroughput"]]
+
+    # Prepare LSI schema for create_table
+    if table_local_secondary_indexes is not None:
+        for lsi in table_local_secondary_indexes:
+            # Delete unnecessary keys from schema dump ready for create_table
+            [lsi.pop(key, None) for key in ["IndexSizeBytes","ItemCount","IndexArn"]]
+
     table_provisioned_throughput = {"ReadCapacityUnits": int(original_read_capacity),
                                     "WriteCapacityUnits": int(original_write_capacity)}
 
@@ -532,13 +556,37 @@ def do_empty(dynamo, table_name):
 
     logging.info("Creating Table " + table_name)
 
+    table_creation_kwargs = {
+        "AttributeDefinitions": table_attribute_definitions,
+        "TableName": table_name,
+        "KeySchema": table_key_schema,
+        "BillingMode": table_billing_mode
+    }
+
+    if table_global_secondary_indexes is not None:
+        table_creation_kwargs = {
+            **table_creation_kwargs,
+            "GlobalSecondaryIndexes": table_global_secondary_indexes
+        }
+
+    if table_local_secondary_indexes is not None:
+        table_creation_kwargs = {
+            **table_creation_kwargs,
+            "LocalSecondaryIndexes": table_local_secondary_indexes
+        }
+
+    if table_billing_mode == 'PAY_PER_REQUEST':
+        logging.info("Creating " + table_name + " table with Billing Mode PAY_PER_REQUEST" )
+    else:
+        logging.info("Creating " + table_name + " table with temp write capacity of " + str(original_write_capacity))
+        table_creation_kwargs = {
+            **table_creation_kwargs,
+            "ProvisionedThroughput": table_provisioned_throughput
+        }
+
     while True:
         try:
-            dynamo.create_table(AttributeDefinitions=table_attribute_definitions, TableName=table_name,
-                                KeySchema=table_key_schema, BillingMode=table_billing_mode,
-                                ProvisionedThroughput=table_provisioned_throughput,
-                                LocalSecondaryIndexes=table_local_secondary_indexes,
-                                GlobalSecondaryIndexes=table_global_secondary_indexes)
+            dynamo.create_table(**table_creation_kwargs)
             break
         except dynamo.exceptions.LimitExceededException as e:
             logging.info("Limit exceeded, retrying creation of " + table_name + "..")
@@ -704,11 +752,12 @@ def do_restore(dynamo, sleep_interval, source_table, destination_table, write_ca
 
             if gsi["ProvisionedThroughput"]["WriteCapacityUnits"] < int(write_capacity):
                 gsi["ProvisionedThroughput"]["WriteCapacityUnits"] = int(write_capacity)
-                # Delete unnecessary keys from schema dump ready for create_table
-                [gsi.pop(key, None) for key in ["IndexStatus","IndexSizeBytes","ItemCount","IndexArn"]]
-                [gsi["ProvisionedThroughput"].pop(key, None) for key in ["LastDecreaseDateTime","NumberOfDecreasesToday","LastIncreaseDateTime"]]
-                if table_billing_mode == 'PAY_PER_REQUEST':
-                    [gsi.pop(key, None) for key in ["ProvisionedThroughput"]]
+
+            # Delete unnecessary keys from schema dump ready for create_table
+            [gsi.pop(key, None) for key in ["IndexStatus","IndexSizeBytes","ItemCount","IndexArn"]]
+            [gsi["ProvisionedThroughput"].pop(key, None) for key in ["LastDecreaseDateTime","NumberOfDecreasesToday","LastIncreaseDateTime"]]
+            if table_billing_mode == 'PAY_PER_REQUEST':
+                [gsi.pop(key, None) for key in ["ProvisionedThroughput"]]
 
     # Prepare LSI schema for create_table
     if table_local_secondary_indexes is not None:
