@@ -426,19 +426,11 @@ def create_table(conn, sleep_interval, table_name, table_data):
     except KeyError:
         table_billing_mode = "PROVISIONED"
 
-    # override GSI write capacities if specified, else use RESTORE_WRITE_CAPACITY if original
-    # write capacity is lower
-    original_gsi_write_capacities = []
     if table_global_secondary_indexes is not None:
         for gsi in table_global_secondary_indexes:
             # Delete unnecessary keys from schema dump ready for create_table
             [gsi.pop(key, None) for key in ["IndexStatus","IndexSizeBytes","ItemCount","IndexArn"]]
             try:
-                original_gsi_write_capacities.append(gsi["ProvisionedThroughput"]["WriteCapacityUnits"])
-
-                if gsi["ProvisionedThroughput"]["WriteCapacityUnits"] < int(original_write_capacity):
-                    gsi["ProvisionedThroughput"]["WriteCapacityUnits"] = int(original_write_capacity)
-
                 [gsi["ProvisionedThroughput"].pop(key, None) for key in ["LastDecreaseDateTime","NumberOfDecreasesToday","LastIncreaseDateTime"]]
                 if table_billing_mode == 'PAY_PER_REQUEST':
                     [gsi.pop(key, None) for key in ["ProvisionedThroughput"]]
@@ -737,7 +729,6 @@ def do_restore(dynamo, sleep_interval, source_table, destination_table, write_ca
     table = table_data["Table"]
     original_read_capacity = table["ProvisionedThroughput"]["ReadCapacityUnits"]
     original_write_capacity = table["ProvisionedThroughput"]["WriteCapacityUnits"]
-    table_local_secondary_indexes = table.get("LocalSecondaryIndexes")
     table_global_secondary_indexes = table.get("GlobalSecondaryIndexes")
     try:
         table_billing_mode = table["BillingModeSummary"]["BillingMode"]
@@ -752,27 +743,15 @@ def do_restore(dynamo, sleep_interval, source_table, destination_table, write_ca
         else:
             write_capacity = original_write_capacity
 
-    # override GSI write capacities if specified, else use RESTORE_WRITE_CAPACITY if original
-    # write capacity is lower
     original_gsi_write_capacities = []
     if table_global_secondary_indexes is not None:
         for gsi in table_global_secondary_indexes:
-            original_gsi_write_capacities.append(gsi["ProvisionedThroughput"]["WriteCapacityUnits"])
-
-            if gsi["ProvisionedThroughput"]["WriteCapacityUnits"] < int(write_capacity):
-                gsi["ProvisionedThroughput"]["WriteCapacityUnits"] = int(write_capacity)
-
-            # Delete unnecessary keys from schema dump ready for create_table
-            [gsi.pop(key, None) for key in ["IndexStatus","IndexSizeBytes","ItemCount","IndexArn"]]
-            [gsi["ProvisionedThroughput"].pop(key, None) for key in ["LastDecreaseDateTime","NumberOfDecreasesToday","LastIncreaseDateTime"]]
-            if table_billing_mode == 'PAY_PER_REQUEST':
-                [gsi.pop(key, None) for key in ["ProvisionedThroughput"]]
-
-    # Prepare LSI schema for create_table
-    if table_local_secondary_indexes is not None:
-        for lsi in table_local_secondary_indexes:
-            # Delete unnecessary keys from schema dump ready for create_table
-            [lsi.pop(key, None) for key in ["IndexSizeBytes","ItemCount","IndexArn"]]
+            try:
+                original_gsi_write_capacities.append(gsi["ProvisionedThroughput"]["WriteCapacityUnits"])
+                if gsi["ProvisionedThroughput"]["WriteCapacityUnits"] < int(write_capacity):
+                    gsi["ProvisionedThroughput"]["WriteCapacityUnits"] = int(write_capacity)
+            except KeyError as e:
+                pass
 
     if not args.dataOnly:
         create_table(dynamo, sleep_interval, destination_table, table_data)
@@ -819,15 +798,14 @@ def do_restore(dynamo, sleep_interval, source_table, destination_table, write_ca
             if len(put_requests) > 0:
                 batch_write(dynamo, BATCH_WRITE_SLEEP_INTERVAL, destination_table, put_requests)
 
-        if not args.skipThroughputUpdate:
+        if not args.skipThroughputUpdate and table_billing_mode != "PAY_PER_REQUEST":
             # revert to original table write capacity if it has been modified
-            if table_billing_mode != "PAY_PER_REQUEST":
-                if int(write_capacity) != original_write_capacity:
-                    update_provisioned_throughput(dynamo,
-                                                destination_table,
-                                                original_read_capacity,
-                                                original_write_capacity,
-                                                False)
+            if int(write_capacity) != original_write_capacity:
+                update_provisioned_throughput(dynamo,
+                                            destination_table,
+                                            original_read_capacity,
+                                            original_write_capacity,
+                                            False)
 
             # loop through each GSI to check if it has changed and update if necessary
             if table_global_secondary_indexes is not None:
